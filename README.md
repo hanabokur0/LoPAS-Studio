@@ -3,6 +3,10 @@
 A visual protocol architecture builder.  
 Drag protocols onto a canvas, connect them by socket type, and watch learning loops emerge.
 
+Build AI + human workflows like molecular systems.
+Connect protocols.
+Detect learning loops.
+Deploy real-world decision systems.
 ---
 
 ## What it does
