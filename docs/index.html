@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LoPAS Studio — Protocol Architecture Builder</title>
+<meta name="description" content="Visual protocol architecture builder. Drag protocols, connect by socket type, discover learning loops.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.2/babel.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body,#root{height:100%;overflow:hidden}
+body{background:#0B0F1A;font-family:'IBM Plex Sans','Noto Sans JP',system-ui,sans-serif;color:#E2E8F0}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:#0F1525}
+::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef,useCallback,useEffect}=React;
+
+const SOCKET_TYPES={
+  observation:{label:"OBS",color:"#F472B6",desc:"観測データ"},
+  question:{label:"QST",color:"#60A5FA",desc:"問い"},
+  judgment:{label:"JDG",color:"#34D399",desc:"判断"},
+  action:{label:"ACT",color:"#FBBF24",desc:"実行"},
+  context:{label:"CTX",color:"#A78BFA",desc:"文脈"},
+  feedback:{label:"FBK",color:"#FB923C",desc:"還元"},
+};
+
+const LIBRARY=[
+  {id:"obs-before-opinion",name:"Observation\nBefore Opinion",shortName:"OBO",category:"Thinking",desc:"意見より先に事実を観測する",inputs:[],outputs:["observation"],color:"#1E293B",accent:"#F472B6"},
+  {id:"concept-stress",name:"Concept\nStress-Test",shortName:"CST",category:"Thinking",desc:"仮説に構造的反論を生成する",inputs:["observation","question"],outputs:["judgment"],color:"#1E293B",accent:"#60A5FA"},
+  {id:"question-cultivation",name:"Question\nCultivation",shortName:"QCP",category:"Thinking",desc:"構造変化を生む問いを育成する",inputs:["observation","feedback"],outputs:["question"],color:"#1E293B",accent:"#60A5FA"},
+  {id:"meeting-decision",name:"Meeting\nDecision",shortName:"MTD",category:"Business",desc:"会議判断を構造化する",inputs:["context","observation"],outputs:["judgment","action"],color:"#1E293B",accent:"#FBBF24"},
+  {id:"session-init",name:"Session\nInitialization",shortName:"SIN",category:"AI",desc:"AI実行コンテキストを構造化する",inputs:["context"],outputs:["action","context"],color:"#1E293B",accent:"#A78BFA"},
+  {id:"rnc-validator",name:"RNC\nValidator",shortName:"RNC",category:"Framework",desc:"責任正規化契約で検証する",inputs:["judgment","action"],outputs:["judgment","feedback"],color:"#1E293B",accent:"#34D399"},
+  {id:"lopas-mccp",name:"LoPAS\nMCCP",shortName:"MCP",category:"Framework",desc:"記憶圧縮・分類プロトコル",inputs:["observation","feedback"],outputs:["context","observation"],color:"#1E293B",accent:"#FB923C"},
+  {id:"cag-core",name:"CAG\nCore",shortName:"CAG",category:"Framework",desc:"認知-行動ギャップを計測する",inputs:["observation"],outputs:["observation","judgment"],color:"#1E293B",accent:"#F472B6"},
+  {id:"lca-lcp",name:"LCA\nClassifier",shortName:"LCP",category:"Learning",desc:"学習が発生したかを分類する",inputs:["observation","feedback"],outputs:["judgment","context"],color:"#1E293B",accent:"#2DD4BF"},
+  {id:"lca-validation",name:"LCA\nValidation",shortName:"LCV",category:"Learning",desc:"学習主張を構造変化で検証する",inputs:["judgment"],outputs:["feedback","observation"],color:"#1E293B",accent:"#2DD4BF"},
+  {id:"lca-retention",name:"Unknown\nRetention",shortName:"UNR",category:"Learning",desc:"未解決構造を保持し再観測に還す",inputs:["feedback"],outputs:["observation","context"],color:"#1E293B",accent:"#818CF8"},
+];
+
+const NODE_W=140,NODE_H=100,SOCKET_R=7,SOCKET_GAP=26;
+const ACCENT_PALETTE=["#F472B6","#60A5FA","#34D399","#FBBF24","#A78BFA","#FB923C","#2DD4BF","#818CF8","#F97316","#EC4899"];
+
+function getSocketPos(node,side,index,total){
+  const startY=node.y+NODE_H/2-((total-1)*SOCKET_GAP)/2;
+  return{x:side==="input"?node.x:node.x+NODE_W,y:startY+index*SOCKET_GAP};
+}
+
+function parseMarkdown(text){
+  const lines=text.split("\n").map(l=>l.trim());
+  let name="",shortName="",category="Custom",desc="",inputs=[],outputs=[];
+  for(const line of lines){
+    if(line.startsWith("# "))name=line.replace("# ","");
+    else if(/^short_?name:/i.test(line))shortName=line.split(":").slice(1).join(":").trim();
+    else if(/^category:/i.test(line))category=line.split(":").slice(1).join(":").trim();
+    else if(/^desc(ription)?:/i.test(line))desc=line.split(":").slice(1).join(":").trim();
+    else if(/^inputs?:/i.test(line)){const raw=line.split(":").slice(1).join(":").trim();inputs=raw.split(/[,\s]+/).map(s=>s.trim().toLowerCase()).filter(s=>s in SOCKET_TYPES);}
+    else if(/^outputs?:/i.test(line)){const raw=line.split(":").slice(1).join(":").trim();outputs=raw.split(/[,\s]+/).map(s=>s.trim().toLowerCase()).filter(s=>s in SOCKET_TYPES);}
+  }
+  if(!name)return null;
+  if(!shortName)shortName=name.replace(/[^A-Z]/gi,"").slice(0,3).toUpperCase()||"CUS";
+  return{name:name.replace(/ /g,"\n"),shortName,category,desc,inputs,outputs};
+}
+
+function parsePython(text){
+  try{
+    let json=text.replace(/#.*/g,"").replace(/'/g,'"').replace(/True/g,"true").replace(/False/g,"false").replace(/None/g,"null").replace(/,\s*}/g,"}").replace(/,\s*]/g,"]");
+    json=json.replace(/([{,]\s*)(\w+)\s*:/g,'$1"$2":');
+    const obj=JSON.parse(json);
+    if(!obj.name)return null;
+    const sn=obj.short_name||obj.shortName||obj.name.replace(/[^A-Z]/gi,"").slice(0,3).toUpperCase();
+    const inputs=(obj.inputs||[]).map(s=>s.toLowerCase()).filter(s=>s in SOCKET_TYPES);
+    const outputs=(obj.outputs||[]).map(s=>s.toLowerCase()).filter(s=>s in SOCKET_TYPES);
+    return{name:(obj.name||"").replace(/ /g,"\n"),shortName:sn,category:obj.category||"Custom",desc:obj.desc||obj.description||"",inputs,outputs};
+  }catch{return null;}
+}
+
+function parseProtocol(text){
+  const t=text.trim();
+  if(t.startsWith("{"))return parsePython(t);
+  if(t.startsWith("#")||/^(name|short_?name|category|desc|input|output):/im.test(t))return parseMarkdown(t);
+  return parsePython(t)||parseMarkdown(t);
+}
+
+function CanvasNode({node,onDrag,onSocketMouseDown,onSocketMouseUp,selected,onSelect,isLoopNode,library}){
+  const lib=library.find(l=>l.id===node.libId);
+  if(!lib)return null;
+  const handleMouseDown=e=>{
+    if(e.target.dataset.socket)return;
+    e.stopPropagation();onSelect(node.id);
+    const startX=e.clientX-node.x,startY=e.clientY-node.y;
+    const move=ev=>onDrag(node.id,ev.clientX-startX,ev.clientY-startY);
+    const up=()=>{window.removeEventListener("mousemove",move);window.removeEventListener("mouseup",up);};
+    window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);
+  };
+  return(
+    <g>
+      {isLoopNode&&<rect x={node.x-4} y={node.y-4} width={NODE_W+8} height={NODE_H+8} rx={14} fill="none" stroke="#2DD4BF" strokeWidth={1.5} opacity={0.5}><animate attributeName="opacity" values="0.2;0.6;0.2" dur="2s" repeatCount="indefinite"/></rect>}
+      <rect x={node.x+3} y={node.y+3} width={NODE_W} height={NODE_H} rx={10} fill="rgba(0,0,0,0.3)"/>
+      <rect x={node.x} y={node.y} width={NODE_W} height={NODE_H} rx={10} fill={lib.color} stroke={selected?lib.accent:"#334155"} strokeWidth={selected?2.5:1} onMouseDown={handleMouseDown} style={{cursor:"grab"}}/>
+      <rect x={node.x} y={node.y} width={NODE_W} height={14} rx={10} fill={lib.accent} style={{pointerEvents:"none"}}/>
+      <rect x={node.x} y={node.y+5} width={NODE_W} height={5} fill={lib.accent} style={{pointerEvents:"none"}}/>
+      <text x={node.x+NODE_W/2} y={node.y+11} textAnchor="middle" fill="#0F172A" fontSize={9} fontWeight={800} fontFamily="monospace" style={{pointerEvents:"none"}}>{lib.shortName}</text>
+      {lib.name.split("\n").map((line,i)=><text key={i} x={node.x+NODE_W/2} y={node.y+34+i*16} textAnchor="middle" fill="#E2E8F0" fontSize={12} fontWeight={600} fontFamily="sans-serif" style={{pointerEvents:"none"}}>{line}</text>)}
+      <text x={node.x+NODE_W/2} y={node.y+NODE_H-10} textAnchor="middle" fill="#64748B" fontSize={9} fontFamily="sans-serif" style={{pointerEvents:"none"}}>{lib.desc.length>14?lib.desc.slice(0,14)+"…":lib.desc}</text>
+      {lib.inputs.map((type,i)=>{const pos=getSocketPos(node,"input",i,lib.inputs.length);const sc=SOCKET_TYPES[type];return(
+        <g key={"in-"+i}><circle cx={pos.x} cy={pos.y} r={SOCKET_R+3} fill="transparent" data-socket="true" style={{cursor:"pointer"}} onMouseUp={()=>onSocketMouseUp(node.id,"input",i,type)}/><circle cx={pos.x} cy={pos.y} r={SOCKET_R} fill="#0F172A" stroke={sc.color} strokeWidth={2} style={{pointerEvents:"none"}}/><text x={pos.x} y={pos.y+3.5} textAnchor="middle" fill={sc.color} fontSize={7} fontWeight={700} fontFamily="monospace" style={{pointerEvents:"none"}}>{sc.label[0]}</text></g>
+      );})}
+      {lib.outputs.map((type,i)=>{const pos=getSocketPos(node,"output",i,lib.outputs.length);const sc=SOCKET_TYPES[type];return(
+        <g key={"out-"+i}><circle cx={pos.x} cy={pos.y} r={SOCKET_R+3} fill="transparent" data-socket="true" style={{cursor:"crosshair"}} onMouseDown={e=>{e.stopPropagation();onSocketMouseDown(node.id,"output",i,type,pos.x,pos.y);}}/><circle cx={pos.x} cy={pos.y} r={SOCKET_R} fill={sc.color} style={{pointerEvents:"none"}}/><text x={pos.x} y={pos.y+3.5} textAnchor="middle" fill="#0F172A" fontSize={7} fontWeight={700} fontFamily="monospace" style={{pointerEvents:"none"}}>{sc.label[0]}</text></g>
+      );})}
+    </g>
+  );
+}
+
+function LibraryItem({lib}){
+  return(
+    <div draggable onDragStart={e=>e.dataTransfer.setData("text/plain",lib.id)} style={{padding:"10px 12px",marginBottom:6,borderRadius:8,background:"#1E293B",border:"1px solid #334155",cursor:"grab",borderLeft:"3px solid "+lib.accent,transition:"border-color 0.15s"}} onMouseEnter={e=>e.currentTarget.style.borderColor=lib.accent} onMouseLeave={e=>e.currentTarget.style.borderColor="#334155"}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+        <span style={{fontSize:9,fontWeight:800,fontFamily:"monospace",color:lib.accent,background:lib.accent+"20",padding:"2px 5px",borderRadius:3}}>{lib.shortName}</span>
+        <span style={{fontSize:12,fontWeight:600,color:"#E2E8F0"}}>{lib.name.replace("\n"," ")}</span>
+      </div>
+      <div style={{fontSize:10,color:"#64748B",marginBottom:6}}>{lib.desc}</div>
+      <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+        {lib.inputs.map((t,i)=><span key={"i"+i} style={{fontSize:8,fontFamily:"monospace",color:SOCKET_TYPES[t].color,border:"1px solid "+SOCKET_TYPES[t].color+"50",padding:"1px 4px",borderRadius:3}}>← {SOCKET_TYPES[t].label}</span>)}
+        {lib.inputs.length>0&&lib.outputs.length>0&&<span style={{fontSize:9,color:"#475569"}}>│</span>}
+        {lib.outputs.map((t,i)=><span key={"o"+i} style={{fontSize:8,fontFamily:"monospace",color:SOCKET_TYPES[t].color,background:SOCKET_TYPES[t].color+"15",padding:"1px 4px",borderRadius:3}}>{SOCKET_TYPES[t].label} →</span>)}
+      </div>
+    </div>
+  );
+}
+
+function ProtocolEditor({onAdd,onClose}){
+  const[text,setText]=useState("");
+  const[preview,setPreview]=useState(null);
+  const[error,setError]=useState("");
+  const[mode,setMode]=useState("md");
+  const templates={
+    md:"# My Protocol\nshortname: MYP\ncategory: Custom\ndescription: このプロトコルの説明\ninputs: observation, context\noutputs: judgment, feedback",
+    py:'{\n  "name": "My Protocol",\n  "short_name": "MYP",\n  "category": "Custom",\n  "desc": "このプロトコルの説明",\n  "inputs": ["observation", "context"],\n  "outputs": ["judgment", "feedback"]\n}'
+  };
+  const handleParse=val=>{
+    setText(val);if(!val.trim()){setPreview(null);setError("");return;}
+    const result=parseProtocol(val);
+    if(result&&(result.inputs.length>0||result.outputs.length>0)){setPreview(result);setError("");}
+    else if(result){setPreview(result);setError("ソケットが定義されていません。inputs / outputs を追加してください。");}
+    else{setPreview(null);setError("パースできませんでした。テンプレートを参考にしてください。");}
+  };
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#111827",border:"1px solid #1E293B",borderRadius:12,width:560,maxHeight:"85vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"16px 20px",borderBottom:"1px solid #1E293B",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div><div style={{fontSize:14,fontWeight:700,color:"#E2E8F0"}}>プロトコルを追加</div><div style={{fontSize:10,color:"#64748B",fontFamily:"monospace"}}>Markdown or Python dict</div></div>
+          <div style={{display:"flex",gap:4}}>
+            {["md","py"].map(m=><button key={m} onClick={()=>{setMode(m);handleParse(templates[m]);}} style={{fontSize:10,padding:"4px 10px",borderRadius:4,border:mode===m?"1px solid #6366F1":"1px solid #334155",background:mode===m?"#6366F120":"transparent",color:mode===m?"#818CF8":"#64748B",cursor:"pointer",fontFamily:"monospace"}}>{m==="md"?"Markdown":"Python"}</button>)}
+          </div>
+        </div>
+        <div style={{padding:"12px 20px",flex:1,overflow:"auto"}}>
+          <textarea value={text} onChange={e=>handleParse(e.target.value)} placeholder={templates[mode]} spellCheck={false} style={{width:"100%",height:180,padding:12,borderRadius:8,border:"1px solid #1E293B",background:"#0B0F1A",color:"#E2E8F0",fontSize:12,fontFamily:"monospace",resize:"vertical",outline:"none",lineHeight:1.6,boxSizing:"border-box"}}/>
+          {error&&<div style={{fontSize:11,color:"#F87171",marginTop:8,padding:"6px 10px",background:"#F8717110",borderRadius:6}}>{error}</div>}
+          {preview&&(
+            <div style={{marginTop:12,padding:14,borderRadius:8,background:"#1E293B",border:"1px solid #334155"}}>
+              <div style={{fontSize:10,color:"#64748B",fontFamily:"monospace",marginBottom:8}}>PREVIEW</div>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={{fontSize:10,fontWeight:800,fontFamily:"monospace",color:"#2DD4BF",background:"#2DD4BF20",padding:"2px 6px",borderRadius:4}}>{preview.shortName}</span>
+                <span style={{fontSize:13,fontWeight:600,color:"#E2E8F0"}}>{preview.name.replace("\n"," ")}</span>
+                <span style={{fontSize:10,color:"#64748B",marginLeft:"auto",fontFamily:"monospace"}}>{preview.category}</span>
+              </div>
+              {preview.desc&&<div style={{fontSize:11,color:"#94A3B8",marginBottom:10}}>{preview.desc}</div>}
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {preview.inputs.map((t,i)=><span key={"i"+i} style={{fontSize:9,fontFamily:"monospace",color:SOCKET_TYPES[t].color,border:"1px solid "+SOCKET_TYPES[t].color+"40",padding:"2px 6px",borderRadius:4}}>← {SOCKET_TYPES[t].label}</span>)}
+                {preview.inputs.length>0&&preview.outputs.length>0&&<span style={{color:"#334155",fontSize:10}}>→</span>}
+                {preview.outputs.map((t,i)=><span key={"o"+i} style={{fontSize:9,fontFamily:"monospace",color:SOCKET_TYPES[t].color,background:SOCKET_TYPES[t].color+"15",padding:"2px 6px",borderRadius:4}}>{SOCKET_TYPES[t].label} →</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={{padding:"12px 20px",borderTop:"1px solid #1E293B",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>sockets: {Object.keys(SOCKET_TYPES).join(" · ")}</div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={onClose} style={{padding:"6px 14px",borderRadius:6,border:"1px solid #334155",background:"none",color:"#94A3B8",fontSize:12,cursor:"pointer"}}>キャンセル</button>
+            <button onClick={()=>{if(preview){onAdd(preview);onClose();}}} disabled={!preview||preview.inputs.length+preview.outputs.length===0} style={{padding:"6px 14px",borderRadius:6,border:"none",background:preview&&(preview.inputs.length+preview.outputs.length>0)?"#6366F1":"#334155",color:"#fff",fontSize:12,fontWeight:600,cursor:preview?"pointer":"default"}}>ライブラリに追加</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const[customProtocols,setCustomProtocols]=useState([]);
+  const allLibrary=[...LIBRARY,...customProtocols];
+  const[canvasNodes,setCanvasNodes]=useState([]);
+  const[connections,setConnections]=useState([]);
+  const[showEditor,setShowEditor]=useState(false);
+  const[selectedNode,setSelectedNode]=useState(null);
+  const[dragging,setDragging]=useState(null);
+  const[mousePos,setMousePos]=useState({x:0,y:0});
+  const[pan,setPan]=useState({x:0,y:0});
+  const svgRef=useRef(null);
+  const idRef=useRef(0);
+  const isPanning=useRef(false);
+  const panStart=useRef({x:0,y:0,panX:0,panY:0});
+
+  const getSVGPoint=useCallback((cx,cy)=>({x:cx-pan.x,y:cy-pan.y}),[pan]);
+
+  const handleDrop=useCallback(e=>{
+    e.preventDefault();
+    const libId=e.dataTransfer.getData("text/plain");
+    if(!allLibrary.find(l=>l.id===libId))return;
+    const rect=svgRef.current.getBoundingClientRect();
+    const pt=getSVGPoint(e.clientX-rect.left,e.clientY-rect.top);
+    setCanvasNodes(prev=>[...prev,{id:"node-"+idRef.current++,libId,x:pt.x-NODE_W/2,y:pt.y-NODE_H/2}]);
+  },[getSVGPoint,allLibrary]);
+
+  const handleNodeDrag=useCallback((id,x,y)=>{setCanvasNodes(prev=>prev.map(n=>n.id===id?{...n,x,y}:n));},[]);
+
+  const handleSocketMouseDown=useCallback((nodeId,side,index,type,sx,sy)=>{
+    setDragging({fromNode:nodeId,fromSide:side,fromIndex:index,fromType:type});
+    setMousePos({x:sx+pan.x,y:sy+pan.y});
+  },[pan]);
+
+  const handleSocketMouseUp=useCallback((nodeId,side,index,type)=>{
+    if(!dragging)return;
+    if(dragging.fromNode===nodeId){setDragging(null);return;}
+    if(dragging.fromType!==type){setDragging(null);return;}
+    const exists=connections.some(c=>c.fromNode===dragging.fromNode&&c.fromIndex===dragging.fromIndex&&c.toNode===nodeId&&c.toIndex===index);
+    if(!exists){setConnections(prev=>[...prev,{id:"conn-"+Date.now(),fromNode:dragging.fromNode,fromIndex:dragging.fromIndex,fromType:dragging.fromType,toNode:nodeId,toIndex:index}]);}
+    setDragging(null);
+  },[dragging,connections]);
+
+  const handleCanvasMouseDown=useCallback(e=>{
+    if(e.target===svgRef.current||(e.target.tagName==="rect"&&e.target.dataset.bg)){
+      isPanning.current=true;
+      panStart.current={x:e.clientX,y:e.clientY,panX:pan.x,panY:pan.y};
+      setSelectedNode(null);
+    }
+  },[pan]);
+
+  useEffect(()=>{
+    const handleMove=e=>{
+      if(dragging&&svgRef.current){setMousePos({x:e.clientX-svgRef.current.getBoundingClientRect().left,y:e.clientY-svgRef.current.getBoundingClientRect().top});}
+      if(isPanning.current){setPan({x:panStart.current.panX+(e.clientX-panStart.current.x),y:panStart.current.panY+(e.clientY-panStart.current.y)});}
+    };
+    const handleUp=()=>{if(dragging)setDragging(null);isPanning.current=false;};
+    window.addEventListener("mousemove",handleMove);
+    window.addEventListener("mouseup",handleUp);
+    return()=>{window.removeEventListener("mousemove",handleMove);window.removeEventListener("mouseup",handleUp);};
+  },[dragging]);
+
+  const handleAddProtocol=useCallback(parsed=>{
+    const id="custom-"+Date.now();
+    const accentIdx=customProtocols.length%ACCENT_PALETTE.length;
+    setCustomProtocols(prev=>[...prev,{id,name:parsed.name,shortName:parsed.shortName,category:parsed.category||"Custom",desc:parsed.desc,inputs:parsed.inputs,outputs:parsed.outputs,color:"#1E293B",accent:ACCENT_PALETTE[accentIdx]}]);
+  },[customProtocols.length]);
+
+  const deleteSelected=()=>{
+    if(!selectedNode)return;
+    setConnections(prev=>prev.filter(c=>c.fromNode!==selectedNode&&c.toNode!==selectedNode));
+    setCanvasNodes(prev=>prev.filter(n=>n.id!==selectedNode));
+    setSelectedNode(null);
+  };
+
+  // Loop detection
+  const detectLoops=useCallback(()=>{
+    if(connections.length===0||canvasNodes.length===0)return{hasLoop:false,loopNodes:new Set(),loopConns:new Set()};
+    const adj={};canvasNodes.forEach(n=>(adj[n.id]=[]));
+    connections.forEach(c=>{if(adj[c.fromNode])adj[c.fromNode].push({to:c.toNode,connId:c.id});});
+    const visited=new Set(),stack=new Set(),loopNodes=new Set(),loopConns=new Set();
+    let hasLoop=false;
+    const dfs=(node,path,pathConns)=>{
+      if(stack.has(node)){hasLoop=true;let inCycle=false;for(let i=0;i<path.length;i++){if(path[i]===node)inCycle=true;if(inCycle){loopNodes.add(path[i]);if(pathConns[i])loopConns.add(pathConns[i]);}}loopNodes.add(node);return;}
+      if(visited.has(node))return;visited.add(node);stack.add(node);
+      for(const edge of(adj[node]||[]))dfs(edge.to,[...path,node],[...pathConns,edge.connId]);
+      stack.delete(node);
+    };
+    canvasNodes.forEach(n=>{if(!visited.has(n.id))dfs(n.id,[],[]);});
+    return{hasLoop,loopNodes,loopConns};
+  },[connections,canvasNodes]);
+
+  const{hasLoop,loopNodes,loopConns}=detectLoops();
+
+  const selectedLib=selectedNode?allLibrary.find(l=>l.id===canvasNodes.find(n=>n.id===selectedNode)?.libId):null;
+
+  const renderConnections=()=>connections.map(conn=>{
+    const fromNode=canvasNodes.find(n=>n.id===conn.fromNode);
+    const toNode=canvasNodes.find(n=>n.id===conn.toNode);
+    if(!fromNode||!toNode)return null;
+    const fromLib=allLibrary.find(l=>l.id===fromNode.libId);
+    const toLib=allLibrary.find(l=>l.id===toNode.libId);
+    if(!fromLib||!toLib)return null;
+    const from=getSocketPos(fromNode,"output",conn.fromIndex,fromLib.outputs.length);
+    const to=getSocketPos(toNode,"input",conn.toIndex,toLib.inputs.length);
+    const sc=SOCKET_TYPES[conn.fromType];
+    const dx=Math.abs(to.x-from.x)*0.5;
+    const path=`M ${from.x} ${from.y} C ${from.x+dx} ${from.y}, ${to.x-dx} ${to.y}, ${to.x} ${to.y}`;
+    const isLoop=loopConns.has(conn.id);
+    return(
+      <g key={conn.id}>
+        {isLoop&&<path d={path} fill="none" stroke={sc.color} strokeWidth={10} opacity={0.15}><animate attributeName="opacity" values="0.08;0.2;0.08" dur="2s" repeatCount="indefinite"/></path>}
+        <path d={path} fill="none" stroke={sc.color+"30"} strokeWidth={6}/>
+        <path d={path} fill="none" stroke={sc.color} strokeWidth={isLoop?2.5:2} strokeDasharray="6 3"><animate attributeName="stroke-dashoffset" from="18" to="0" dur={isLoop?"0.8s":"1.5s"} repeatCount="indefinite"/></path>
+      </g>
+    );
+  });
+
+  const renderDragWire=()=>{
+    if(!dragging)return null;
+    const fromNode=canvasNodes.find(n=>n.id===dragging.fromNode);
+    if(!fromNode)return null;
+    const fromLib=allLibrary.find(l=>l.id===fromNode.libId);
+    if(!fromLib)return null;
+    const from=getSocketPos(fromNode,"output",dragging.fromIndex,fromLib.outputs.length);
+    const sc=SOCKET_TYPES[dragging.fromType];
+    const to={x:mousePos.x-pan.x,y:mousePos.y-pan.y};
+    const dx=Math.abs(to.x-from.x)*0.4;
+    const path=`M ${from.x} ${from.y} C ${from.x+dx} ${from.y}, ${to.x-dx} ${to.y}, ${to.x} ${to.y}`;
+    return<path d={path} fill="none" stroke={sc.color} strokeWidth={2} strokeDasharray="4 4" opacity={0.6}/>;
+  };
+
+  return(
+    <div style={{background:"#0B0F1A",color:"#E2E8F0",height:"100vh",display:"flex",overflow:"hidden"}}>
+      {/* Sidebar */}
+      <div style={{width:260,flexShrink:0,borderRight:"1px solid #1E293B",display:"flex",flexDirection:"column",background:"#0F1525"}}>
+        <div style={{padding:"14px 16px",borderBottom:"1px solid #1E293B"}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",fontFamily:"monospace",letterSpacing:"0.08em",marginBottom:2}}>LIBRARY</div>
+          <div style={{fontSize:10,color:"#475569"}}>ドラッグしてキャンバスへ</div>
+        </div>
+        <div style={{padding:"10px 16px",borderBottom:"1px solid #1E293B"}}>
+          <div style={{fontSize:9,color:"#475569",marginBottom:6,fontFamily:"monospace"}}>SOCKET TYPES</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+            {Object.entries(SOCKET_TYPES).map(([k,s])=><span key={k} style={{fontSize:8,fontFamily:"monospace",color:s.color,background:s.color+"12",border:"1px solid "+s.color+"30",padding:"2px 5px",borderRadius:3}}>{s.label} {s.desc}</span>)}
+          </div>
+        </div>
+        <div style={{flex:1,overflow:"auto",padding:"8px 10px"}}>
+          {(()=>{
+            const cats=[];allLibrary.forEach(l=>{if(!cats.includes(l.category))cats.push(l.category);});
+            return cats.map(cat=>{
+              const items=allLibrary.filter(l=>l.category===cat);
+              if(items.length===0)return null;
+              const isSpecial=cat==="Learning";
+              const isCustom=!["Thinking","Business","AI","Framework","Learning"].includes(cat);
+              return(
+                <div key={cat} style={{marginBottom:8}}>
+                  <div style={{fontSize:9,fontWeight:700,color:isSpecial?"#2DD4BF":isCustom?"#818CF8":"#475569",fontFamily:"monospace",letterSpacing:"0.06em",padding:"6px 4px 4px",borderBottom:"1px solid "+(isSpecial?"#2DD4BF20":isCustom?"#818CF820":"#1E293B"),marginBottom:4,display:"flex",alignItems:"center",gap:6}}>
+                    {isSpecial&&<svg width="10" height="10" viewBox="0 0 12 12"><path d="M6 1 A5 5 0 1 1 1 6" fill="none" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round"/><polygon points="1,4 1,7 3.5,5.5" fill="#2DD4BF"/></svg>}
+                    {isCustom&&<span style={{fontSize:10}}>◆</span>}
+                    {cat.toUpperCase()}
+                  </div>
+                  {items.map(lib=><LibraryItem key={lib.id} lib={lib}/>)}
+                </div>
+              );
+            });
+          })()}
+        </div>
+        <div style={{padding:"10px 12px",borderTop:"1px solid #1E293B"}}>
+          <button onClick={()=>setShowEditor(true)} style={{width:"100%",padding:"8px",borderRadius:6,border:"1px dashed #334155",background:"transparent",color:"#94A3B8",fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,fontFamily:"monospace"}} onMouseEnter={e=>{e.currentTarget.style.borderColor="#6366F1";e.currentTarget.style.color="#818CF8";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="#334155";e.currentTarget.style.color="#94A3B8";}}>+ Add Protocol (MD / Python)</button>
+        </div>
+        {selectedLib&&(
+          <div style={{padding:"12px 16px",borderTop:"1px solid #1E293B",background:"#111827"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{fontSize:12,fontWeight:700,color:selectedLib.accent}}>{selectedLib.name.replace("\n"," ")}</span>
+              <button onClick={deleteSelected} style={{fontSize:10,padding:"3px 8px",borderRadius:4,border:"1px solid #EF4444",background:"none",color:"#EF4444",cursor:"pointer"}}>削除</button>
+            </div>
+            <div style={{fontSize:10,color:"#94A3B8"}}>{selectedLib.desc}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Canvas */}
+      <div style={{flex:1,position:"relative"}} onDragOver={e=>e.preventDefault()} onDrop={handleDrop}>
+        <div style={{position:"absolute",top:0,left:0,right:0,height:44,background:"linear-gradient(180deg,#0B0F1A,transparent)",display:"flex",alignItems:"center",padding:"0 20px",zIndex:10,pointerEvents:"none"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <svg width="20" height="20" viewBox="0 0 20 20"><polygon points="10,1 18,6 18,14 10,19 2,14 2,6" fill="none" stroke="#6366F1" strokeWidth="1.5"/><circle cx="10" cy="10" r="3" fill="#6366F1"/></svg>
+            <span style={{fontSize:14,fontWeight:700,letterSpacing:"-0.01em"}}>LoPAS Studio</span>
+            <span style={{fontSize:10,color:"#475569",fontFamily:"monospace"}}>{canvasNodes.length} nodes · {connections.length} bonds</span>
+            {hasLoop&&<span style={{fontSize:10,fontWeight:700,fontFamily:"monospace",color:"#2DD4BF",background:"#2DD4BF18",border:"1px solid #2DD4BF40",padding:"3px 10px",borderRadius:20,display:"flex",alignItems:"center",gap:5,pointerEvents:"auto"}}><svg width="12" height="12" viewBox="0 0 12 12" style={{animation:"spin 3s linear infinite"}}><path d="M6 1 A5 5 0 1 1 1 6" fill="none" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round"/><polygon points="1,4 1,7 3.5,5.5" fill="#2DD4BF"/></svg>Learning Spiral Detected</span>}
+          </div>
+        </div>
+        <svg ref={svgRef} width="100%" height="100%" style={{background:"#0B0F1A",cursor:"default"}} onMouseDown={handleCanvasMouseDown}>
+          <defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse" x={pan.x%40} y={pan.y%40}><circle cx="20" cy="20" r="0.5" fill="#1E293B"/></pattern></defs>
+          <rect data-bg="true" width="100%" height="100%" fill="url(#grid)"/>
+          <g transform={`translate(${pan.x},${pan.y})`}>
+            {renderConnections()}
+            {renderDragWire()}
+            {canvasNodes.map(node=><CanvasNode key={node.id} node={node} onDrag={handleNodeDrag} onSocketMouseDown={handleSocketMouseDown} onSocketMouseUp={handleSocketMouseUp} selected={selectedNode===node.id} onSelect={setSelectedNode} isLoopNode={loopNodes.has(node.id)} library={allLibrary}/>)}
+          </g>
+          {canvasNodes.length===0&&<text x="50%" y="50%" textAnchor="middle" fill="#334155" fontSize="14" fontFamily="sans-serif">← ライブラリからスキルをドラッグして配置</text>}
+        </svg>
+      </div>
+
+      {showEditor&&<ProtocolEditor onAdd={handleAddProtocol} onClose={()=>setShowEditor(false)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
